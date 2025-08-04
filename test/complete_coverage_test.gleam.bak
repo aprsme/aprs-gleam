@@ -1,0 +1,555 @@
+import gleeunit/should
+import gleam/option.{None, Some}
+import gleam/string
+import aprs.{
+  parse_aprs, type ParseResult, type Position, type PacketType, Message, Object, Item, Telemetry,
+  PositionPacket, MicE, Compressed, Weather, Status, NmeaGprmc, NmeaGpgga, NmeaGpgll, DxSpot,
+  distance, direction, count_digihops, aprs_duplicate_parts, make_timestamp, make_position,
+  make_object, mice_mbits_to_message, kiss_to_tnc2, tnc2_to_kiss, get_position_resolution,
+  get_symbol_info
+}
+
+// ===============================
+// POSITION PARSING TESTS
+// ===============================
+
+pub fn test_uncompressed_position_full_precision() {
+  let packet = "VK4ABC>APU25N:!3728.51S/14405.68E#Test comment"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(PositionPacket)
+      case result.position {
+        Some(pos) -> {
+          should.be_true(pos.latitude <. -37.0 && pos.latitude >. -38.0)
+          should.be_true(pos.longitude >. 144.0 && pos.longitude <. 145.0)
+          pos.ambiguity |> should.equal(0)
+        }
+        None -> should.fail()
+      }
+      result.symbol_table |> should.equal(Some("/"))
+      result.symbol_code |> should.equal(Some("#"))
+      result.comment |> should.equal(Some("Test comment"))
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_position_with_course_speed_altitude() {
+  let packet = "VK4ABC>APU25N:!3728.51S/14405.68E#090/036/A=001234Test"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.course |> should.equal(Some(90))
+      case result.speed {
+        Some(speed) -> should.be_true(speed >. 65.0 && speed <. 68.0)
+        None -> should.fail()
+      }
+      case result.altitude {
+        Some(alt) -> should.be_true(alt >. 375.0 && alt <. 377.0)
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_position_with_phg_data() {
+  let packet = "VK4ABC>APU25N:!3728.51S/14405.68E#PHG7220Test"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      case result.phg {
+        Some(phg) -> {
+          phg.power |> should.equal(7)
+          phg.height |> should.equal(2)
+          phg.gain |> should.equal(2)
+          phg.directivity |> should.equal(0)
+        }
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_position_with_rng_data() {
+  let packet = "VK4ABC>APU25N:!3728.51S/14405.68E#RNG0050Test"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      case result.rng {
+        Some(range) -> should.be_true(range >. 80.0 && range <. 81.0)
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_compressed_position() {
+  let packet = "VK4ABC>APU25N:!/5L!!<*e7>7P[Test"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(PositionPacket)
+      case result.position {
+        Some(_) -> should.be_true(True)
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// MIC-E PARSING TESTS  
+// ===============================
+
+pub fn test_mice_emergency_packet() {
+  let packet = "VK4ABC>S32U6T:`c\\<l!|3>Test"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(MicE)
+      result.mic_e_message |> should.equal(Some("Emergency"))
+      case result.position {
+        Some(_) -> should.be_true(True)
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// MESSAGE PARSING TESTS
+// ===============================
+
+pub fn test_message_with_id() {
+  let packet = "VK4ABC>APU25N::VK4XYZ   :Testing message{001"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Message)
+      result.addressee |> should.equal(Some("VK4XYZ"))
+      result.message |> should.equal(Some("Testing message"))
+      result.message_id |> should.equal(Some("001"))
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_message_ack() {
+  let packet = "VK4ABC>APU25N::VK4XYZ   :ack001"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Message)
+      result.message_ack |> should.equal(Some("001"))
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_message_reject() {
+  let packet = "VK4ABC>APU25N::VK4XYZ   :rej001"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Message)
+      result.message_reject |> should.equal(Some("001"))
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// OBJECT PARSING TESTS
+// ===============================
+
+pub fn test_object_alive() {
+  let packet = "VK4ABC>APU25N:;TEST OBJ *121200z3728.51S/14405.68E#Test comment"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Object)
+      result.object_name |> should.equal(Some("TEST OBJ"))
+      result.object_alive |> should.equal(Some(True))
+      case result.timestamp {
+        Some(_) -> should.be_true(True)
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_object_killed() {
+  let packet = "VK4ABC>APU25N:;TEST OBJ _121200z3728.51S/14405.68E#Test comment"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.object_alive |> should.equal(Some(False))
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// ITEM PARSING TESTS
+// ===============================
+
+pub fn test_item_alive() {
+  let packet = "VK4ABC>APU25N:)ITEM!3728.51S/14405.68E#"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Item)
+      result.item_name |> should.equal(Some("ITEM"))
+      result.item_alive |> should.equal(Some(True))
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_item_killed() {
+  let packet = "VK4ABC>APU25N:)ITEM_3728.51S/14405.68E#"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.item_alive |> should.equal(Some(False))
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// TELEMETRY PARSING TESTS
+// ===============================
+
+pub fn test_telemetry_packet() {
+  let packet = "VK4ABC>APU25N:T#005,123,045,200,067,890,11110000"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Telemetry)
+      case result.telemetry {
+        Some(tlm) -> {
+          tlm.sequence |> should.equal(5)
+          tlm.analog |> should.equal([123.0, 45.0, 200.0, 67.0, 890.0])
+        }
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// WEATHER PARSING TESTS
+// ===============================
+
+pub fn test_weather_packet() {
+  let packet = "VK4ABC>APU25N:_10090556c220s004g005t072r000p000P000h50b09900"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Weather)
+      case result.weather {
+        Some(wx) -> {
+          wx.wind_direction |> should.equal(Some(220))
+          case wx.wind_speed {
+            Some(speed) -> should.be_true(speed >. 1.0 && speed <. 3.0)
+            None -> should.fail()
+          }
+          case wx.temperature {
+            Some(temp) -> should.be_true(temp >. 22.0 && temp <. 23.0)
+            None -> should.fail()
+          }
+        }
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// NMEA PARSING TESTS
+// ===============================
+
+pub fn test_nmea_gprmc() {
+  let packet = "VK4ABC>APU25N:$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(NmeaGprmc)
+      case result.position {
+        Some(pos) -> {
+          should.be_true(pos.latitude >. 48.0 && pos.latitude <. 49.0)
+          should.be_true(pos.longitude >. 11.0 && pos.longitude <. 12.0)
+        }
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_nmea_gpgga() {
+  let packet = "VK4ABC>APU25N:$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(NmeaGpgga)
+      case result.position {
+        Some(pos) -> {
+          case pos.altitude {
+            Some(alt) -> should.be_true(alt >. 545.0 && alt <. 546.0)
+            None -> should.fail()
+          }
+        }
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_nmea_gpgll() {
+  let packet = "VK4ABC>APU25N:$GPGLL,4807.038,N,01131.000,E,123519,A*21"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(NmeaGpgll)
+      case result.position {
+        Some(_) -> should.be_true(True)
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// STATUS PARSING TESTS
+// ===============================
+
+pub fn test_status_with_timestamp() {
+  let packet = "VK4ABC>APU25N:>121200zThis is a status message"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Status)
+      result.status |> should.equal(Some("This is a status message"))
+      case result.timestamp {
+        Some(_) -> should.be_true(True)
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_status_no_timestamp() {
+  let packet = "VK4ABC>APU25N:>This is a status message"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(Status)
+      result.status |> should.equal(Some("This is a status message"))
+      result.timestamp |> should.equal(None)
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// DX SPOT PARSING TESTS
+// ===============================
+
+pub fn test_dx_spot() {
+  let packet = "VK4ABC>APU25N:DX de VK4ABC: 14.205 VK9XYZ Strong signal"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      result.packet_type |> should.equal(DxSpot)
+      case result.comment {
+        Some(comment) -> string.contains(comment, "14.205") |> should.equal(True)
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+// ===============================
+// UTILITY FUNCTION TESTS
+// ===============================
+
+pub fn test_distance_calculation() {
+  let sydney_lat = -33.8688
+  let sydney_lon = 151.2093
+  let melbourne_lat = -37.8136
+  let melbourne_lon = 144.9631
+  
+  let calculated_distance = distance(sydney_lon, sydney_lat, melbourne_lon, melbourne_lat)
+  should.be_true(calculated_distance >. 705.0 && calculated_distance <. 720.0)
+}
+
+pub fn test_direction_calculation() {
+  let calculated_direction = direction(0.0, 0.0, 1.0, 1.0)
+  should.be_true(calculated_direction >. 40.0 && calculated_direction <. 50.0)
+}
+
+pub fn test_count_digihops() {
+  let packet_header = "VK4ABC>APU25N,WIDE1-1*,WIDE2-1"
+  let hops = count_digihops(packet_header)
+  hops |> should.equal(1)  // Only WIDE1-1 has been digipeated (*)
+}
+
+pub fn test_aprs_duplicate_parts() {
+  let packet = "VK4ABC>APU25N,WIDE1-1:!3728.51S/14405.68E#Test"
+  
+  case aprs_duplicate_parts(packet) {
+    Ok(#(source, dest, body)) -> {
+      source |> should.equal("VK4ABC")
+      dest |> should.equal("APU25N")
+      body |> should.equal("!3728.51S/14405.68E#Test")
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_make_timestamp() {
+  let timestamp = make_timestamp(1234567890, "z")
+  string.length(timestamp) |> should.equal(7)
+  string.ends_with(timestamp, "z") |> should.equal(True)
+}
+
+pub fn test_make_position() {
+  let position_str = make_position(-37.5, 144.8, "/", "#", 0)
+  string.length(position_str) |> should.equal(19)
+  string.contains(position_str, "S") |> should.equal(True)
+  string.contains(position_str, "E") |> should.equal(True)
+}
+
+pub fn test_make_object() {
+  let object_str = make_object("TEST", True, 1234567890, -37.5, 144.8, "/", "#", "Test comment")
+  string.starts_with(object_str, ";TEST") |> should.equal(True)
+  string.contains(object_str, "*") |> should.equal(True)
+}
+
+pub fn test_mice_mbits_to_message() {
+  let emergency_msg = mice_mbits_to_message([True, True, True])
+  emergency_msg |> should.equal("Emergency")
+  
+  let priority_msg = mice_mbits_to_message([True, True, False])
+  priority_msg |> should.equal("Priority")
+}
+
+pub fn test_get_position_resolution() {
+  let full_precision = get_position_resolution("3728.51", "14405.68")
+  should.be_true(full_precision <. 2.0)
+  
+  let ambiguous = get_position_resolution("3728.5 ", "14405.6 ")
+  should.be_true(ambiguous >. 18.0 && ambiguous <. 19.0)
+}
+
+pub fn test_get_symbol_info() {
+  let police_symbol = get_symbol_info("/", "!")
+  police_symbol.description |> should.equal("Police/Sheriff")
+  police_symbol.category |> should.equal("Emergency")
+  
+  let car_symbol = get_symbol_info("/", ">")
+  car_symbol.description |> should.equal("Car")
+  car_symbol.category |> should.equal("Vehicle")
+}
+
+// ===============================
+// ERROR CONDITION TESTS
+// ===============================
+
+pub fn test_invalid_callsign() {
+  let packet = "123>APU25N:!3728.51S/14405.68E#"
+  
+  case parse_aprs(packet) {
+    Ok(_) -> should.fail()
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn test_packet_too_short() {
+  let packet = "VK4"
+  
+  case parse_aprs(packet) {
+    Ok(_) -> should.fail()
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn test_no_packet_body() {
+  let packet = "VK4ABC>APU25N:"
+  
+  case parse_aprs(packet) {
+    Ok(_) -> should.fail()
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn test_empty_packet() {
+  let packet = ""
+  
+  case parse_aprs(packet) {
+    Ok(_) -> should.fail()
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn test_too_many_digipeaters() {
+  let packet = "VK4ABC>APU25N,W1,W2,W3,W4,W5,W6,W7,W8,W9:!3728.51S/14405.68E#"
+  
+  case parse_aprs(packet) {
+    Ok(_) -> should.fail()
+    Error(_) -> should.be_true(True)
+  }
+}
+
+// ===============================
+// EDGE CASE TESTS
+// ===============================
+
+pub fn test_maximum_coordinates() {
+  let packet = "VK4ABC>APU25N:!8959.99N/17959.99E#"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      case result.position {
+        Some(pos) -> {
+          should.be_true(pos.latitude >. 89.0 && pos.latitude <. 90.0)
+          should.be_true(pos.longitude >. 179.0 && pos.longitude <. 180.0)
+        }
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn test_negative_coordinates() {
+  let packet = "VK4ABC>APU25N:!3728.51S/14405.68W#"
+  
+  case parse_aprs(packet) {
+    Ok(result) -> {
+      case result.position {
+        Some(pos) -> {
+          should.be_true(pos.latitude <. 0.0)
+          should.be_true(pos.longitude <. 0.0)
+        }
+        None -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}

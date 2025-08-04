@@ -1,0 +1,10 @@
+name = "aprs_gleam"
+version = "1.0.0"
+description = "A comprehensive APRS packet parser written in Gleam"
+
+[dependencies]
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+qcheck = ">= 1.0.0 and < 2.0.0"
