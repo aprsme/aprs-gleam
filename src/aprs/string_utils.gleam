@@ -9,12 +9,9 @@ fn char_is_in_set(char: String, valid_set: String) -> Bool {
 
 /// Check if a string contains only uppercase A-Z and digits 0-9
 pub fn is_alphanumeric(s: String) -> Bool {
-  case string.is_empty(s) {
-    True -> False
-    False -> {
-      string.to_graphemes(s)
-      |> list.all(fn(char) { char_is_in_set(char, valid_alphanumeric_chars) })
-    }
+  !string.is_empty(s) && {
+    string.to_graphemes(s)
+    |> list.all(fn(char) { char_is_in_set(char, valid_alphanumeric_chars) })
   }
 }
 

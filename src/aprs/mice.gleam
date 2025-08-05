@@ -104,6 +104,38 @@ pub fn decode_mice_destination(dest: String) -> Result(MiceLatitude, String) {
   ))
 }
 
+fn validate_mice_data_length(body: String) -> Result(String, String) {
+  case string.length(body) >= 9 {
+    True -> Ok(body)
+    False -> Error("MIC-E data too short")
+  }
+}
+
+fn validate_mice_data_marker(body: String) -> Result(String, String) {
+  case string.slice(body, 0, 1) == "`" {
+    True -> Ok(body)
+    False -> Error("Invalid MIC-E data marker")
+  }
+}
+
+fn extract_mice_data_bytes(body: String) -> String {
+  string.slice(body, 1, string.length(body) - 1)
+}
+
+fn decode_mice_data_bytes(_data_bytes: String) -> types.MiceInformation {
+  // For now, return a simple result
+  // Full MIC-E decoding is complex and requires byte-level operations
+  MiceInformation(
+    longitude: 0.0,
+    course: None,
+    speed: None,
+    symbol_table: "/",
+    symbol_code: ">",
+    altitude: None,
+    comment: Some("MIC-E packet"),
+  )
+}
+
 pub fn decode_mice_data(body: String) -> Result(types.MiceInformation, String) {
   // MIC-E data format: 'llllllssiccccccc... where:
   // ' = back-tick (0x60)
@@ -112,29 +144,10 @@ pub fn decode_mice_data(body: String) -> Result(types.MiceInformation, String) {
   // i = symbol table and info byte
   // ccccccc = comment text
   
-  case string.length(body) < 9 {
-    True -> Error("MIC-E data too short")
-    False -> {
-      case string.slice(body, 0, 1) == "`" {
-        False -> Error("Invalid MIC-E data marker")
-        True -> {
-          // Extract the encoded bytes
-          let _data_bytes = string.slice(body, 1, string.length(body) - 1)
-          
-          // For now, return a simple result
-          // Full MIC-E decoding is complex and requires byte-level operations
-          Ok(MiceInformation(
-            longitude: 0.0,
-            course: None,
-            speed: None,
-            symbol_table: "/",
-            symbol_code: ">",
-            altitude: None,
-            comment: Some("MIC-E packet"),
-          ))
-        }
-      }
-    }
-  }
+  use validated_body <- result.try(validate_mice_data_length(body))
+  use marked_body <- result.try(validate_mice_data_marker(validated_body))
+  
+  let data_bytes = extract_mice_data_bytes(marked_body)
+  Ok(decode_mice_data_bytes(data_bytes))
 }
 

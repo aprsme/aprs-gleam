@@ -6,6 +6,7 @@ import gleam/result
 import gleam/string
 import gleam/dict
 import aprs/string_utils
+import aprs/utils
 import aprs/types.{
   type Altitude, type BodyParseResult, type Course, type ParseError,
   type PhgValue, type PositionInfo, type Range, type Speed,
@@ -445,22 +446,20 @@ fn parse_course_speed(data: String) -> #(Option(Course), Option(Speed), String) 
           let remaining = string.slice(data, 7, string.length(data) - 7)
 
           let course = case int.parse(course_str) {
-            Ok(c) if c >= 1 && c <= 360 ->
-              case make_course(case c == 360 { True -> 0 False -> c }) {
-                Ok(course) -> Some(course)
-                Error(_) -> None
-              }
+            Ok(c) if c >= 1 && c <= 360 -> {
+              let normalized = case c { 360 -> 0 _ -> c }
+              make_course(normalized)
+              |> utils.result_to_option
+            }
             _ -> None
           }
 
-          let speed = case int.parse(speed_str) {
-            Ok(s) -> 
-              case make_speed(int.to_float(s) *. 1.852) {
-                Ok(speed) -> Some(speed)
-                Error(_) -> None
-              }
-            _ -> None
-          }
+          let speed = 
+            int.parse(speed_str)
+            |> result.map(fn(s) { int.to_float(s) *. 1.852 })
+            |> result.map_error(fn(_) { "" })
+            |> result.try(make_speed)
+            |> utils.result_to_option
 
           #(course, speed, remaining)
         }

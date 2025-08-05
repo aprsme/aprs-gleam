@@ -577,20 +577,24 @@ type MessageType {
   RegularMessage(String, Option(MessageId))
 }
 
+fn parse_message_with_id(message_and_id: String) -> MessageType {
+  string.split(message_and_id, "{")
+  |> fn(parts) {
+    case parts {
+      [msg, id] -> 
+        make_message_id(id)
+        |> utils.result_to_option
+        |> fn(msg_id_opt) { RegularMessage(msg, msg_id_opt) }
+      _ -> RegularMessage(message_and_id, None)
+    }
+  }
+}
+
 fn detect_message_type(message_and_id: String) -> MessageType {
   case message_and_id {
     "ack" <> rest -> Acknowledgment(rest)
     "rej" <> rest -> Rejection(rest)
-    _ -> {
-      case string.split(message_and_id, "{") {
-        [msg, id] -> 
-          case make_message_id(id) {
-            Ok(msg_id) -> RegularMessage(msg, Some(msg_id))
-            Error(_) -> RegularMessage(message_and_id, None)
-          }
-        _ -> RegularMessage(message_and_id, None)
-      }
-    }
+    _ -> parse_message_with_id(message_and_id)
   }
 }
 
@@ -650,6 +654,18 @@ fn parse_message_packet(body: String) -> Result(BodyParseResult, ParseError) {
   build_message_result(addressee, message_type)
 }
 
+fn parse_analog_value(val: String) -> Result(Float, ParseError) {
+  case val {
+    "" -> Ok(0.0)
+    _ -> 
+      int.parse(val)
+      |> result.map(int.to_float)
+      |> result.lazy_or(fn() { float.parse(val) })
+      |> result.unwrap(0.0)
+      |> Ok
+  }
+}
+
 fn parse_telemetry_packet(body: String) -> Result(BodyParseResult, ParseError) {
   // Telemetry format: T#SEQ,A1,A2,A3,A4,A5,B1B2B3B4B5B6B7B8,COMMENT
   // Where SEQ is sequence number, A1-A5 are analog values, B1-B8 are digital bits
@@ -669,16 +685,7 @@ fn parse_telemetry_packet(body: String) -> Result(BodyParseResult, ParseError) {
           // Parse analog values
           let analog_values = [a1, a2, a3, a4, a5]
           let analog_results = list.map(analog_values, fn(val) {
-            case val {
-              "" -> Ok(0.0)
-              _ -> case int.parse(val) {
-                Ok(i) -> Ok(int.to_float(i))
-                Error(_) -> case float.parse(val) {
-                  Ok(f) -> Ok(f)
-                  Error(_) -> Ok(0.0)
-                }
-              }
-            }
+            parse_analog_value(val)
           })
           
           let analog = list.map(analog_results, fn(r) {

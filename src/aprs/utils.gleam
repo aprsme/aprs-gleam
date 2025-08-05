@@ -8,14 +8,11 @@ pub fn option_try_map(
   opt opt: Option(a),
   with f: fn(a) -> Result(b, e),
 ) -> Option(b) {
-  case opt {
-    Some(value) ->
-      case f(value) {
-        Ok(result) -> Some(result)
-        Error(_) -> None
-      }
-    None -> None
-  }
+  opt
+  |> option_then(fn(value) {
+    f(value)
+    |> result_to_option
+  })
 }
 
 /// Chains two optional operations, useful for nested Option handling
