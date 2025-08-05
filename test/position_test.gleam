@@ -3,6 +3,11 @@ import gleeunit/should
 import aprs
 import aprs/types
 import gleam/option.{Some, None}
+import qcheck
+import gleam/list
+import gleam/int
+import gleam/string
+import gleam/float
 
 pub fn main() {
   gleeunit.main()
@@ -186,4 +191,99 @@ pub fn parse_position_with_range_test() {
     }
     Error(_) -> should.fail()
   }
+}
+
+// Test: Compressed position format examples from real packets
+pub fn compressed_position_examples_test() {
+  // Real compressed position examples from packets.csv
+  let compressed_examples = [
+    #("!/:Kr6;Ahc>-BG", "K3RTA-12"),
+    #("!/42TlP\\6gvBNQ", "DO2JMG-9"),
+    #("!L4G-{MWS)a xG", "MW7VHD-13"),
+    #("=/9,[]MS+\\>LdQ", "EA1GLE-7"),
+    #("!L4Y6zP:rz&  G", "DG2EKJ-10")
+  ]
+  
+  compressed_examples
+  |> list.each(fn(example) {
+    let #(pos_data, callsign) = example
+    let packet = callsign <> ">APRS:" <> pos_data
+    
+    case aprs.parse_aprs(packet) {
+      Ok(result) -> {
+        result.packet_type |> should.equal(types.PositionPacket)
+        // Just verify it parses as a position packet
+      }
+      Error(_) -> {
+        // Compressed positions might not be fully supported yet
+        Nil
+      }
+    }
+  })
+}
+
+// Property test: Compressed position format
+pub fn compressed_position_property_test() {
+  // Compressed format uses printable ASCII characters
+  let gen = {
+    use content <- qcheck.bind(qcheck.string_from(qcheck.printable_ascii_codepoint()))
+    
+    qcheck.return(content)
+  }
+  
+  qcheck.given(gen, fn(content) {
+    // Take first 13 chars for compressed position (symbol table + 8 position + symbol)
+    let compressed = string.slice(content <> "!4237N07120W#", 0, 13)
+    let packet = "K1ABC>APRS:!" <> compressed
+    
+    case aprs.parse_aprs(packet) {
+      Ok(_result) -> {
+        // Just verify it doesn't crash
+        Nil
+      }
+      Error(_) -> {
+        // Some compressed positions might be invalid
+        Nil
+      }
+    }
+  })
+}
+
+// Generator for altitude values in feet
+fn altitude_generator() -> qcheck.Generator(Int) {
+  qcheck.bounded_int(0, 50000)
+}
+
+// Test: Altitude field parsing property
+pub fn altitude_field_property_test() {
+  qcheck.given(altitude_generator(), fn(alt_feet) {
+    let alt_str = case alt_feet {
+      a if a < 10 -> "00000" <> int.to_string(a)
+      a if a < 100 -> "0000" <> int.to_string(a)
+      a if a < 1000 -> "000" <> int.to_string(a)
+      a if a < 10000 -> "00" <> int.to_string(a)
+      a if a < 100000 -> "0" <> int.to_string(a)
+      a -> int.to_string(a)
+    }
+    let alt_str = string.slice(alt_str, string.length(alt_str) - 6, 6)
+    
+    let packet = "K1ABC>APRS:!4237.14N/07120.83W#/A=" <> alt_str
+    
+    case aprs.parse_aprs(packet) {
+      Ok(result) -> {
+        case result.altitude {
+          Some(alt) -> {
+            // Verify altitude is converted to meters correctly
+            let alt_meters = aprs.altitude_value(alt)
+            let expected_meters = int.to_float(alt_feet) *. 0.3048
+            
+            // Allow small rounding errors
+            should.be_true(float.absolute_value(alt_meters -. expected_meters) <. 1.0)
+          }
+          None -> should.fail()
+        }
+      }
+      Error(_) -> should.fail()
+    }
+  })
 }

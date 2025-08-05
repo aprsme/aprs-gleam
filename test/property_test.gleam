@@ -6,6 +6,7 @@ import gleam/int
 import gleam/list
 import gleam/string
 import gleam/option.{Some, None}
+import qcheck
 
 pub fn main() {
   gleeunit.main()
@@ -117,6 +118,86 @@ pub fn course_range_test() {
           }
           None -> should.fail()
         }
+      }
+      Error(_) -> should.fail()
+    }
+  })
+}
+
+// Generator for SSID values (0-15)
+fn ssid_generator() -> qcheck.Generator(Int) {
+  qcheck.bounded_int(0, 15)
+}
+
+// Generator for callsigns with flexible SSID formats
+fn callsign_with_ssid_generator() -> qcheck.Generator(String) {
+  // Generate simple alphanumeric callsigns
+  use first_char <- qcheck.bind(
+    qcheck.from_generators(
+      qcheck.return("K"),
+      [qcheck.return("W"), qcheck.return("N"), qcheck.return("A")]
+    )
+  )
+  use digit <- qcheck.bind(qcheck.bounded_int(0, 9))
+  use suffix <- qcheck.bind(qcheck.string_from(qcheck.uppercase_ascii_codepoint()))
+  use ssid <- qcheck.bind(ssid_generator())
+  use has_dash <- qcheck.bind(qcheck.bool())
+  
+  let base_call = first_char <> int.to_string(digit) <> string.slice(suffix, 0, 3)
+  
+  case ssid {
+    0 -> qcheck.return(base_call)
+    _ -> {
+      case has_dash {
+        True -> qcheck.return(base_call <> "-" <> int.to_string(ssid))
+        False -> qcheck.return(base_call <> int.to_string(ssid))
+      }
+    }
+  }
+}
+
+// Test: Callsigns with various SSID formats should parse
+pub fn callsign_ssid_formats_property_test() {
+  qcheck.given(callsign_with_ssid_generator(), fn(call) {
+    let packet = call <> ">APRS:>Test"
+    
+    case aprs.parse_aprs(packet) {
+      Ok(result) -> {
+        // Should parse successfully
+        result.source.callsign
+        |> aprs.callsign_value()
+        |> string.length()
+        |> fn(len) { should.be_true(len > 0) }
+      }
+      Error(_) -> should.fail()
+    }
+  })
+}
+
+// Generator for PHG values
+fn phg_digit_generator() -> qcheck.Generator(String) {
+  qcheck.bounded_int(0, 9)
+  |> qcheck.map(int.to_string)
+}
+
+// Test: PHG (Power-Height-Gain) format
+pub fn phg_format_property_test() {
+  let gen = {
+    use p <- qcheck.bind(phg_digit_generator())
+    use h <- qcheck.bind(phg_digit_generator())
+    use g <- qcheck.bind(phg_digit_generator())
+    use d <- qcheck.bind(phg_digit_generator())
+    
+    qcheck.return("PHG" <> p <> h <> g <> d)
+  }
+  
+  qcheck.given(gen, fn(phg) {
+    let packet = "K1ABC>APRS:!4237.14N/07120.83W#" <> phg
+    
+    case aprs.parse_aprs(packet) {
+      Ok(result) -> {
+        // Should parse as position packet
+        result.packet_type |> should.equal(types.PositionPacket)
       }
       Error(_) -> should.fail()
     }

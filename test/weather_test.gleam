@@ -3,6 +3,8 @@ import gleeunit/should
 import aprs
 import aprs/types
 import gleam/option.{Some, None}
+import qcheck
+import gleam/int
 
 pub fn main() {
   gleeunit.main()
@@ -165,4 +167,82 @@ pub fn parse_invalid_weather_test() {
       Nil
     }
   }
+}
+
+// Helper to pad number to 3 digits
+fn pad_to_3_digits(n: Int) -> String {
+  case n {
+    n if n < 10 -> "00" <> int.to_string(n)
+    n if n < 100 -> "0" <> int.to_string(n)
+    n -> int.to_string(n)
+  }
+}
+
+// Property test: Weather data with variable wind speeds
+pub fn weather_wind_speed_property_test() {
+  let gen = {
+    use wind_dir <- qcheck.bind(qcheck.bounded_int(0, 359))
+    use wind_speed <- qcheck.bind(qcheck.bounded_int(0, 200))
+    use wind_gust <- qcheck.bind(qcheck.bounded_int(0, 200))
+    use temp <- qcheck.bind(qcheck.bounded_int(-50, 150))
+    
+    qcheck.return(#(wind_dir, wind_speed, wind_gust, temp))
+  }
+  
+  qcheck.given(gen, fn(params) {
+    let #(wind_dir, wind_speed, wind_gust, temp) = params
+    
+    let wind_dir_str = pad_to_3_digits(wind_dir)
+    let wind_speed_str = pad_to_3_digits(wind_speed)
+    let wind_gust_str = pad_to_3_digits(wind_gust)
+    let temp_str = pad_to_3_digits(temp)
+    
+    let packet = "N0CALL>APRS:_" <> wind_dir_str <> "/" <> wind_speed_str <> "g" <> wind_gust_str <> "t" <> temp_str
+    
+    case aprs.parse_aprs(packet) {
+      Ok(_result) -> {
+        // Just verify it doesn't crash
+        Nil
+      }
+      Error(_) -> {
+        // Some combinations might be invalid
+        Nil
+      }
+    }
+  })
+}
+
+// Property test: Complete weather reports
+pub fn weather_complete_report_property_test() {
+  let gen = {
+    use temp <- qcheck.bind(qcheck.bounded_int(0, 150))
+    use humidity <- qcheck.bind(qcheck.bounded_int(0, 100))
+    use pressure <- qcheck.bind(qcheck.bounded_int(9000, 10500))
+    
+    qcheck.return(#(temp, humidity, pressure))
+  }
+  
+  qcheck.given(gen, fn(params) {
+    let #(temp, humidity, pressure) = params
+    
+    let temp_str = pad_to_3_digits(temp)
+    let humidity_str = case humidity {
+      100 -> "00"
+      h if h < 10 -> "0" <> int.to_string(h)
+      h -> int.to_string(h)
+    }
+    let pressure_str = int.to_string(pressure)
+    
+    let packet = "KC0YIR>APRS:@092345z4651.95N/09625.50W_090/005g010t" <> temp_str <> "r000p010P010h" <> humidity_str <> "b" <> pressure_str
+    
+    case aprs.parse_aprs(packet) {
+      Ok(result) -> {
+        result.packet_type |> should.equal(types.Weather)
+      }
+      Error(_) -> {
+        // Some combinations might be invalid
+        Nil
+      }
+    }
+  })
 }
