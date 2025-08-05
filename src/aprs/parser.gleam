@@ -4,6 +4,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import aprs/constants
+import aprs/utils
 import aprs/position
 import aprs/weather
 import aprs/mice
@@ -16,7 +18,9 @@ import aprs/result_utils.{
 import aprs/string_utils
 import aprs/types.{
   type BodyParseResult, type ParseError, type ParseResult, type StationId,
-  type Timestamp, InvalidDigipeaterCall, InvalidPosition, InvalidSourceCall, 
+  type Timestamp, type MessageId, type StrictPosition, type SymbolTable, type SymbolCode,
+  type MiceLatitude, type MiceInformation,
+  InvalidDigipeaterCall, InvalidPosition, InvalidSourceCall, 
   InvalidMessage, InvalidTimestamp, Message, NoBody, NoPacketGiven, PacketTooShort, ParseResult, 
   StationId, Status, TooManyDigipeaters, UnknownPacket, UnsupportedFormat,
   Item, MicE, Object, StrictPosition, StrictTelemetryData, Telemetry, Weather, InvalidMicE,
@@ -33,25 +37,28 @@ pub fn parse_aprs(packet: String) -> Result(ParseResult, ParseError) {
 }
 
 fn parse_packet_internal(packet: String) -> Result(ParseResult, ParseError) {
-  case string.length(packet) < 10 {
+  case string.length(packet) < constants.min_packet_length {
     True -> Error(PacketTooShort)
-    False -> {
-      case string.split_once(packet, ":") {
-        Ok(#(header, body)) -> {
-          case string.is_empty(body) {
-            True -> Error(NoBody)
-            False -> parse_header_and_body(header, body)
-          }
+    False ->
+      string.split_once(packet, ":")
+      |> result.replace_error(NoBody)
+      |> result.try(fn(split) {
+        let #(header, body) = split
+        case string.is_empty(body) {
+          True -> Error(NoBody)
+          False -> Ok(#(header, body))
         }
-        Error(_) -> Error(NoBody)
-      }
-    }
+      })
+      |> result.try(fn(parts) {
+        let #(header, body) = parts
+        parse_header_and_body(header, body)
+      })
   }
 }
 
 fn parse_header_and_body(
-  header: String,
-  body: String,
+  header header: String,
+  body body: String,
 ) -> Result(ParseResult, ParseError) {
   use header_parts <- result.try(parse_header(header))
   let #(source, destination, digipeaters) = header_parts
@@ -100,7 +107,7 @@ fn parse_header_and_body(
 }
 
 pub fn parse_header(
-  header: String,
+  header header: String,
 ) -> Result(#(String, String, List(String)), ParseError) {
   let clean_header = string.trim(header) |> string.uppercase
 
@@ -215,35 +222,54 @@ pub fn parse_station_id(callsign_str: String) -> Result(StationId, ParseError) {
   }
 }
 
-pub fn parse_body_with_context(
-  body: String,
-  source: String,
-  destination: String,
-) -> Result(BodyParseResult, ParseError) {
-  case string.first(body) {
-    Ok("!") | Ok("=") -> parse_position_packet(body)
-    Ok("@") | Ok("/") -> parse_timestamp_position_packet(body)
-    Ok("'") | Ok("`") ->
-      parse_mice_packet_with_context(body, source, destination)
-    Ok(";") -> parse_object_packet(body)
-    Ok(")") -> parse_item_packet(body)
-    Ok(":") -> parse_message_packet(body)
-    Ok("T") -> parse_telemetry_packet(body)
-    Ok("_") -> parse_weather_packet(body)
-    Ok("$") -> parse_nmea_packet(body)
-    Ok(">") -> parse_status_packet(body)
-    _ -> {
-      case parse_dx_spot(body, source) {
-        Ok(dx_result) -> Ok(dx_result)
-        Error(_) ->
-          Ok(
-            empty_body_result()
-            |> set_packet_type(UnknownPacket)
-            |> set_comment(Some(body)),
-          )
-      }
-    }
+type PacketParser =
+  fn(String, String, String) -> Result(BodyParseResult, ParseError)
+
+fn get_simple_parser(
+  parser: fn(String) -> Result(BodyParseResult, ParseError),
+) -> PacketParser {
+  fn(body, _source, _destination) { parser(body) }
+}
+
+fn get_parser_for_prefix(prefix: String) -> Option(PacketParser) {
+  case prefix {
+    "!" | "=" -> Some(get_simple_parser(parse_position_packet))
+    "@" | "/" -> Some(get_simple_parser(parse_timestamp_position_packet))
+    "'" | "`" -> Some(parse_mice_packet_with_context)
+    ";" -> Some(get_simple_parser(parse_object_packet))
+    ")" -> Some(get_simple_parser(parse_item_packet))
+    ":" -> Some(get_simple_parser(parse_message_packet))
+    "T" -> Some(get_simple_parser(parse_telemetry_packet))
+    "_" -> Some(get_simple_parser(parse_weather_packet))
+    "$" -> Some(get_simple_parser(parse_nmea_packet))
+    ">" -> Some(get_simple_parser(parse_status_packet))
+    _ -> None
   }
+}
+
+fn parse_unknown_or_dx(
+  body body: String,
+  source source: String,
+) -> Result(BodyParseResult, ParseError) {
+  parse_dx_spot(body, source)
+  |> result.lazy_unwrap(fn() {
+    empty_body_result()
+    |> set_packet_type(UnknownPacket)
+    |> set_comment(Some(body))
+  })
+  |> Ok
+}
+
+pub fn parse_body_with_context(
+  body body: String,
+  source source: String,
+  destination destination: String,
+) -> Result(BodyParseResult, ParseError) {
+  string.first(body)
+  |> result.unwrap("")
+  |> get_parser_for_prefix
+  |> option.map(fn(parser) { parser(body, source, destination) })
+  |> option.lazy_unwrap(fn() { parse_unknown_or_dx(body, source) })
 }
 
 // Delegate to position module
@@ -251,57 +277,75 @@ fn parse_position_packet(body: String) -> Result(BodyParseResult, ParseError) {
   position.parse_position_packet(body)
 }
 
-fn parse_timestamp_position_packet(
-  body: String,
-) -> Result(BodyParseResult, ParseError) {
-  // Timestamp position packets have format: @DDHHMMz... or /DDHHMMz...
-  case string.length(body) < 8 {
+fn extract_timestamp_components(body: String) -> Result(#(String, String, String), ParseError) {
+  case string.length(body) < constants.timestamp_packet_min_length {
     True -> Error(InvalidPosition)
     False -> {
       let timestamp_str = string.slice(body, 1, 6)
       let tz = string.slice(body, 7, 1)
       let remaining = string.slice(body, 8, string.length(body) - 8)
-      
-      use timestamp <- result.try(parse_timestamp(timestamp_str, tz))
-      
-      // Check if there's weather data in the remaining part
-      case string.contains(remaining, "_") {
-        True -> {
-          // Parse as position with weather
-          case string.split(remaining, "_") {
-            [pos_part, weather_part] -> {
-              // Parse position part
-              use pos_result <- result.try(position.parse_position_packet("!" <> pos_part))
-              // Parse weather part  
-              use weather_result <- result.try(parse_weather_data("_" <> weather_part))
-              
-              Ok(
-                pos_result
-                |> result_utils.set_timestamp(Some(timestamp))
-                |> set_packet_type(Weather)
-                |> set_weather(weather_result.weather)
-                |> set_comment(weather_result.comment)
-              )
-            }
-            _ -> {
-              // Fallback: parse as regular position
-              use result <- result.try(position.parse_position_packet("!" <> remaining))
-              Ok(result |> result_utils.set_timestamp(Some(timestamp)))
-            }
-          }
-        }
-        False -> {
-          // No weather data, parse as regular position
-          use result <- result.try(position.parse_position_packet("!" <> remaining))
-          Ok(result |> result_utils.set_timestamp(Some(timestamp)))
-        }
-      }
+      Ok(#(timestamp_str, tz, remaining))
     }
   }
 }
 
+fn split_weather_data(data: String) -> Result(#(String, String), ParseError) {
+  case string.split(data, "_") {
+    [pos_part, weather_part] -> Ok(#(pos_part, weather_part))
+    _ -> Error(InvalidPosition)
+  }
+}
+
+fn combine_position_and_weather(
+  position_part pos_part: String,
+  weather_part weather_part: String,
+  timestamp timestamp: Timestamp,
+) -> Result(BodyParseResult, ParseError) {
+  use pos_result <- result.try(position.parse_position_packet("!" <> pos_part))
+  use weather_result <- result.try(parse_weather_data("_" <> weather_part))
+  
+  Ok(
+    pos_result
+    |> result_utils.set_timestamp(Some(timestamp))
+    |> set_packet_type(Weather)
+    |> set_weather(weather_result.weather)
+    |> set_comment(weather_result.comment)
+  )
+}
+
+fn parse_position_only(
+  data data: String,
+  timestamp timestamp: Timestamp,
+) -> Result(BodyParseResult, ParseError) {
+  use result <- result.try(position.parse_position_packet("!" <> data))
+  Ok(result |> result_utils.set_timestamp(Some(timestamp)))
+}
+
+fn parse_timestamp_position_packet(
+  body: String,
+) -> Result(BodyParseResult, ParseError) {
+  use #(timestamp_str, tz, remaining) <- result.try(extract_timestamp_components(body))
+  use timestamp <- result.try(parse_timestamp(timestamp_str, tz))
+  
+  case string.contains(remaining, "_") {
+    True -> {
+      case split_weather_data(remaining) {
+        Ok(#(pos_part, weather_part)) -> 
+          combine_position_and_weather(pos_part, weather_part, timestamp)
+        Error(_) -> 
+          parse_position_only(remaining, timestamp)
+      }
+    }
+    False -> parse_position_only(remaining, timestamp)
+  }
+}
+
+fn is_valid_timestamp(day: Int, hour: Int, min: Int) -> Bool {
+  day >= 1 && day <= 31 && hour >= 0 && hour <= 23 && min >= 0 && min <= 59
+}
+
 fn parse_timestamp(time_str: String, _tz: String) -> Result(Timestamp, ParseError) {
-  case string.length(time_str) == 6 {
+  case string.length(time_str) == constants.timestamp_field_length {
     False -> Error(InvalidTimestamp)
     True -> {
       let day_str = string.slice(time_str, 0, 2)
@@ -318,13 +362,11 @@ fn parse_timestamp(time_str: String, _tz: String) -> Result(Timestamp, ParseErro
         int.parse(min_str) |> result.map_error(fn(_) { InvalidTimestamp })
       )
       
-      case
-        day >= 1 && day <= 31 && hour >= 0 && hour <= 23 && min >= 0 && min <= 59
-      {
+      case is_valid_timestamp(day, hour, min) {
         False -> Error(InvalidTimestamp)
         True -> {
           // Convert to seconds since start of month
-          let timestamp_val = { day - 1 } * 86400 + hour * 3600 + min * 60
+          let timestamp_val = { day - 1 } * constants.seconds_per_day + hour * constants.seconds_per_hour + min * constants.seconds_per_minute
           make_timestamp(timestamp_val)
           |> result.map_error(fn(_) { InvalidTimestamp })
         }
@@ -333,35 +375,19 @@ fn parse_timestamp(time_str: String, _tz: String) -> Result(Timestamp, ParseErro
   }
 }
 
-fn parse_mice_packet_with_context(
-  body: String,
-  _source: String,
-  destination: String,
-) -> Result(BodyParseResult, ParseError) {
-  // Decode latitude from destination
-  use mice_lat <- result.try(
-    mice.decode_mice_destination(destination)
-    |> result.map_error(fn(_) { InvalidMicE })
-  )
-  
-  // Decode longitude and other data from body
-  use mice_info <- result.try(
-    mice.decode_mice_data(body)
-    |> result.map_error(fn(_) { InvalidMicE })
-  )
-  
-  // Create position
-  let lat_val = case mice_lat.north_south {
-    "N" -> mice_lat.latitude
-    "S" -> 0.0 -. mice_lat.latitude
-    _ -> mice_lat.latitude
+fn apply_hemisphere_sign(value value: Float, direction direction: String, positive positive: String) -> Float {
+  case direction {
+    d if d == positive -> value
+    _ -> 0.0 -. value
   }
-  
-  let lon_val = case mice_lat.east_west {
-    "E" -> mice_info.longitude
-    "W" -> 0.0 -. mice_info.longitude
-    _ -> mice_info.longitude
-  }
+}
+
+fn decode_mice_position(
+  mice_lat mice_lat: MiceLatitude,
+  mice_info mice_info: MiceInformation,
+) -> Result(StrictPosition, ParseError) {
+  let lat_val = apply_hemisphere_sign(mice_lat.latitude, mice_lat.north_south, "N")
+  let lon_val = apply_hemisphere_sign(mice_info.longitude, mice_lat.east_west, "E")
   
   use latitude <- result.try(
     make_latitude(lat_val)
@@ -373,6 +399,19 @@ fn parse_mice_packet_with_context(
     |> result.map_error(fn(_) { InvalidMicE })
   )
   
+  let altitude = utils.option_try_map(mice_info.altitude, make_altitude)
+  
+  Ok(StrictPosition(
+    latitude: latitude,
+    longitude: longitude,
+    ambiguity: mice_lat.ambiguity,
+    altitude: altitude,
+  ))
+}
+
+fn decode_mice_symbols(
+  mice_info mice_info: MiceInformation,
+) -> Result(#(SymbolTable, SymbolCode), ParseError) {
   use symbol_table <- result.try(
     make_symbol_table(mice_info.symbol_table)
     |> result.map_error(fn(_) { InvalidMicE })
@@ -383,50 +422,47 @@ fn parse_mice_packet_with_context(
     |> result.map_error(fn(_) { InvalidMicE })
   )
   
-  // Convert altitude if present
-  let altitude = case mice_info.altitude {
-    Some(alt) -> case make_altitude(alt) {
-      Ok(a) -> Some(a)
-      Error(_) -> None
-    }
-    None -> None
-  }
+  Ok(#(symbol_table, symbol_code))
+}
+
+fn build_mice_result(
+  position position: StrictPosition,
+  symbols symbols: #(SymbolTable, SymbolCode),
+  mice_info mice_info: MiceInformation,
+) -> BodyParseResult {
+  let #(symbol_table, symbol_code) = symbols
+  let course = utils.option_try_map(mice_info.course, make_course)
+  let speed = utils.option_try_map(mice_info.speed, make_speed)
   
-  // Convert course if present
-  let course = case mice_info.course {
-    Some(c) -> case make_course(c) {
-      Ok(crs) -> Some(crs)
-      Error(_) -> None
-    }
-    None -> None
-  }
-  
-  // Convert speed if present
-  let speed = case mice_info.speed {
-    Some(s) -> case make_speed(s) {
-      Ok(spd) -> Some(spd)
-      Error(_) -> None
-    }
-    None -> None
-  }
-  
-  let position = StrictPosition(
-    latitude: latitude,
-    longitude: longitude,
-    ambiguity: mice_lat.ambiguity,
-    altitude: altitude,
+  empty_body_result()
+  |> set_packet_type(MicE)
+  |> set_position(Some(position))
+  |> set_symbol_table(Some(symbol_table))
+  |> set_symbol_code(Some(symbol_code))
+  |> set_comment(mice_info.comment)
+  |> set_course(course)
+  |> set_speed(speed)
+}
+
+fn parse_mice_packet_with_context(
+  body body: String,
+  source _source: String,
+  destination destination: String,
+) -> Result(BodyParseResult, ParseError) {
+  use mice_lat <- result.try(
+    mice.decode_mice_destination(destination)
+    |> result.map_error(fn(_) { InvalidMicE })
   )
   
-  Ok(
-    empty_body_result()
-    |> set_packet_type(MicE)
-    |> set_position(Some(position))
-    |> set_symbol_table(Some(symbol_table))
-    |> set_symbol_code(Some(symbol_code))
-    |> set_comment(mice_info.comment)
-    |> set_course(course)
-    |> set_speed(speed)
+  use mice_info <- result.try(
+    mice.decode_mice_data(body)
+    |> result.map_error(fn(_) { InvalidMicE })
   )
+  
+  use position <- result.try(decode_mice_position(mice_lat, mice_info))
+  use symbols <- result.try(decode_mice_symbols(mice_info))
+  
+  Ok(build_mice_result(position, symbols, mice_info))
 }
 
 fn parse_object_packet(body: String) -> Result(BodyParseResult, ParseError) {
@@ -527,95 +563,83 @@ fn find_item_name_end(body: String, start: Int) -> Option(Int) {
   }
 }
 
-fn parse_message_packet(body: String) -> Result(BodyParseResult, ParseError) {
-  // Message format: :ADDRESSEE:Message text{ID
-  // Addressee must be exactly 9 characters (padded with spaces)
+type MessageType {
+  Acknowledgment(String)
+  Rejection(String)
+  RegularMessage(String, Option(MessageId))
+}
+
+fn detect_message_type(message_and_id: String) -> MessageType {
+  case message_and_id {
+    "ack" <> rest -> Acknowledgment(rest)
+    "rej" <> rest -> Rejection(rest)
+    _ -> {
+      case string.split(message_and_id, "{") {
+        [msg, id] -> 
+          case make_message_id(id) {
+            Ok(msg_id) -> RegularMessage(msg, Some(msg_id))
+            Error(_) -> RegularMessage(message_and_id, None)
+          }
+        _ -> RegularMessage(message_and_id, None)
+      }
+    }
+  }
+}
+
+fn validate_message_format(body: String) -> Result(#(String, String), ParseError) {
   case string.length(body) < 11 {
     True -> Error(InvalidMessage)
     False -> {
       let addressee_str = string.slice(body, 1, 9)
       let separator = string.slice(body, 10, 1)
+      let message_part = string.slice(body, 11, string.length(body) - 11)
       
-      case separator == ":" {
-        False -> Error(InvalidMessage)
-        True -> {
-          let message_and_id = string.slice(body, 11, string.length(body) - 11)
-          
-          // Check if this is an ack or rej
-          case string.starts_with(message_and_id, "ack") {
-            True -> {
-              let ack_id = string.slice(message_and_id, 3, string.length(message_and_id) - 3)
-              use ack <- result.try(
-                make_message_id(ack_id)
-                |> result.map_error(fn(_) { InvalidMessage })
-              )
-              use addressee <- result.try(
-                make_addressee(addressee_str)
-                |> result.map_error(fn(_) { InvalidMessage })
-              )
-              
-              Ok(
-                empty_body_result()
-                |> set_packet_type(Message)
-                |> set_addressee(Some(addressee))
-                |> set_message_ack(Some(ack))
-              )
-            }
-            False -> case string.starts_with(message_and_id, "rej") {
-              True -> {
-                let rej_id = string.slice(message_and_id, 3, string.length(message_and_id) - 3)
-                use rej <- result.try(
-                  make_message_id(rej_id)
-                  |> result.map_error(fn(_) { InvalidMessage })
-                )
-                use addressee <- result.try(
-                  make_addressee(addressee_str)
-                  |> result.map_error(fn(_) { InvalidMessage })
-                )
-                
-                Ok(
-                  empty_body_result()
-                  |> set_packet_type(Message)
-                  |> set_addressee(Some(addressee))
-                  |> set_message_reject(Some(rej))
-                )
-              }
-              False -> {
-                // Regular message, check for ID at the end
-                let #(message_text, message_id) = case string.contains(message_and_id, "{") {
-                  False -> #(message_and_id, None)
-                  True -> {
-                    case string.split(message_and_id, "{") {
-                      [msg, id] -> {
-                        case make_message_id(id) {
-                          Ok(msg_id) -> #(msg, Some(msg_id))
-                          Error(_) -> #(message_and_id, None)
-                        }
-                      }
-                      _ -> #(message_and_id, None)
-                    }
-                  }
-                }
-                
-                use addressee <- result.try(
-                  make_addressee(addressee_str)
-                  |> result.map_error(fn(_) { InvalidMessage })
-                )
-                
-                Ok(
-                  empty_body_result()
-                  |> set_packet_type(Message)
-                  |> set_addressee(Some(addressee))
-                  |> set_message(Some(message_text))
-                  |> set_message_id(message_id)
-                )
-              }
-            }
-          }
-        }
+      case separator {
+        ":" -> Ok(#(addressee_str, message_part))
+        _ -> Error(InvalidMessage)
       }
     }
   }
+}
+
+fn build_message_result(
+  addressee: types.Addressee,
+  message_type: MessageType,
+) -> Result(BodyParseResult, ParseError) {
+  let base_result =
+    empty_body_result()
+    |> set_packet_type(Message)
+    |> set_addressee(Some(addressee))
+  
+  case message_type {
+    Acknowledgment(id) ->
+      make_message_id(id)
+      |> result.map(fn(ack) { set_message_ack(base_result, Some(ack)) })
+      |> result.map_error(fn(_) { InvalidMessage })
+    
+    Rejection(id) ->
+      make_message_id(id)
+      |> result.map(fn(rej) { set_message_reject(base_result, Some(rej)) })
+      |> result.map_error(fn(_) { InvalidMessage })
+    
+    RegularMessage(text, id) ->
+      Ok(
+        base_result
+        |> set_message(Some(text))
+        |> set_message_id(id)
+      )
+  }
+}
+
+fn parse_message_packet(body: String) -> Result(BodyParseResult, ParseError) {
+  use #(addressee_str, message_part) <- result.try(validate_message_format(body))
+  use addressee <- result.try(
+    make_addressee(addressee_str)
+    |> result.map_error(fn(_) { InvalidMessage })
+  )
+  
+  let message_type = detect_message_type(message_part)
+  build_message_result(addressee, message_type)
 }
 
 fn parse_telemetry_packet(body: String) -> Result(BodyParseResult, ParseError) {
@@ -783,12 +807,12 @@ fn parse_position_with_weather(body: String) -> Result(BodyParseResult, ParseErr
 
 fn parse_weather_data(data: String) -> Result(BodyParseResult, ParseError) {
   // Parse weather elements: cDDDsDDDgDDDtTTTrRRRpPPPPbBBBBBhHH
-  let mut_data = case string.starts_with(data, "_") {
+  let weather_data = case string.starts_with(data, "_") {
     True -> string.slice(data, 1, string.length(data) - 1)
     False -> data
   }
   
-  let weather = weather.parse_weather_elements(mut_data)
+  let weather = weather.parse_weather_elements(weather_data)
   
   Ok(
     empty_body_result()

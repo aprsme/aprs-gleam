@@ -55,67 +55,58 @@ fn decode_mice_lon_dir(c: String) -> String {
   }
 }
 
+fn extract_latitude_components(values: List(#(Int, Bool))) -> #(Int, Int, Int, Bool) {
+  let assert [#(d1, _), #(d2, _), #(d3, _), #(d4, n4), #(d5, _), #(d6, _)] = values
+  #(d1 * 10 + d2, d3 * 10 + d4, d5 * 10 + d6, n4)
+}
+
+fn calculate_latitude(deg: Int, min: Int, min_frac: Int) -> Float {
+  int.to_float(deg) +. { int.to_float(min) +. int.to_float(min_frac) /. 100.0 } /. 60.0
+}
+
+fn extract_longitude_info(lat_chars: List(String)) -> #(Int, String) {
+  let lon_offset = 
+    list.drop(lat_chars, 4)
+    |> list.first()
+    |> result.map(decode_mice_lon_offset)
+    |> result.unwrap(0)
+  
+  let east_west = 
+    list.drop(lat_chars, 5)
+    |> list.first()
+    |> result.map(decode_mice_lon_dir)
+    |> result.unwrap("E")
+  
+  #(lon_offset, east_west)
+}
+
 pub fn decode_mice_destination(dest: String) -> Result(MiceLatitude, String) {
   let chars = string.to_graphemes(dest)
   
-  case list.length(chars) >= 6 {
-    False -> Error("MIC-E destination too short")
-    True -> {
-      let lat_chars = list.take(chars, 6)
-      
-      // Decode each character
-      let decoded = list.map(lat_chars, decode_mice_lat_digit)
-      
-      case list.all(decoded, result.is_ok) {
-        False -> Error("Invalid MIC-E latitude encoding")
-        True -> {
-          let values = list.map(decoded, fn(r) {
-            case r {
-            Ok(v) -> v
-            Error(_) -> #(0, False)  // Should not happen due to list.all check
-          }
-          })
-          
-          // Extract latitude digits and north/south
-          case values {
-            [#(d1, _), #(d2, _), #(d3, _), #(d4, n4), #(d5, _n5), #(d6, _n6)] -> {
-              let lat_deg = d1 * 10 + d2
-              let lat_min = d3 * 10 + d4
-              let lat_min_frac = d5 * 10 + d6
-              
-              let latitude = int.to_float(lat_deg) +. { int.to_float(lat_min) +. int.to_float(lat_min_frac) /. 100.0 } /. 60.0
-              
-              // Determine N/S from 4th, 5th, 6th characters
-              let north_south = case n4 {
-                True -> "N"
-                False -> "S"
-              }
-              
-              // Longitude offset from 5th character
-              let _lon_offset = case list.drop(lat_chars, 4) |> list.first() {
-                Ok(c) -> decode_mice_lon_offset(c)
-                Error(_) -> 0
-              }
-              
-              // E/W from 6th character
-              let east_west = case list.drop(lat_chars, 5) |> list.first() {
-                Ok(c) -> decode_mice_lon_dir(c)
-                Error(_) -> "E"
-              }
-              
-              Ok(MiceLatitude(
-                latitude: latitude,
-                ambiguity: 0,
-                north_south: north_south,
-                east_west: east_west,
-              ))
-            }
-            _ -> Error("Invalid MIC-E latitude format")
-          }
-        }
-      }
+  use lat_chars <- result.try(
+    case list.length(chars) >= 6 {
+      True -> Ok(list.take(chars, 6))
+      False -> Error("MIC-E destination too short")
     }
-  }
+  )
+  
+  use values <- result.try(
+    list.try_map(lat_chars, decode_mice_lat_digit)
+    |> result.map_error(fn(_) { "Invalid MIC-E latitude encoding" })
+  )
+  
+  let #(lat_deg, lat_min, lat_min_frac, n4) = extract_latitude_components(values)
+  
+  let latitude = calculate_latitude(lat_deg, lat_min, lat_min_frac)
+  let north_south = case n4 { True -> "N" False -> "S" }
+  let #(_lon_offset, east_west) = extract_longitude_info(lat_chars)
+  
+  Ok(MiceLatitude(
+    latitude: latitude,
+    ambiguity: 0,
+    north_south: north_south,
+    east_west: east_west,
+  ))
 }
 
 pub fn decode_mice_data(body: String) -> Result(types.MiceInformation, String) {

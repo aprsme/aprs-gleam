@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/dict
 import aprs/string_utils
 import aprs/types.{
   type Altitude, type BodyParseResult, type Course, type ParseError,
@@ -137,10 +138,11 @@ fn decode_compressed_cs_t(cs: String, t: String) -> Result(#(Option(Course), Opt
               use course <- result.try(
                 case course_val {
                   0 -> Ok(None)
-                  c if c >= 1 && c <= 360 -> 
-                    make_course(case c == 360 { True -> 0 False -> c })
-                    |> result.map(Some)
-                    |> result.map_error(fn(_) { InvalidPosition })
+                  c if c >= 1 && c <= 360 -> {
+                    let normalized_course = case c == 360 { True -> 0 False -> c }
+                    let assert Ok(course) = make_course(normalized_course)
+                    Ok(Some(course))
+                  }
                   _ -> Error(InvalidPosition)
                 }
               )
@@ -170,36 +172,57 @@ fn decode_compressed_cs_t(cs: String, t: String) -> Result(#(Option(Course), Opt
   }
 }
 
+fn generate_base91_chars() -> String {
+  // Base-91 character set in order (ASCII 32-126, excluding 96)
+  " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+}
+
+fn int_to_char(code: Int) -> String {
+  // Convert an ASCII code to a single character string
+  // This is a workaround since Gleam doesn't have a direct int-to-char function
+  let all_chars = generate_base91_chars()
+  case code >= 32 && code <= 126 && code != 96 {
+    True -> {
+      let index = case code > 96 { 
+        True -> code - 33 
+        False -> code - 32 
+      }
+      string.slice(all_chars, index, 1)
+    }
+    False -> ""
+  }
+}
+
+fn generate_ascii_range(start: Int, end: Int, acc: List(Int)) -> List(Int) {
+  case start > end {
+    True -> list.reverse(acc)
+    False -> generate_ascii_range(start + 1, end, [start, ..acc])
+  }
+}
+
+fn get_base91_map() {
+  // Generate all ASCII codes from 32 to 126, excluding 96
+  let ascii_codes = 
+    list.append(
+      generate_ascii_range(32, 95, []),
+      generate_ascii_range(97, 126, [])
+    )
+  
+  // Create the mapping
+  ascii_codes
+  |> list.map(fn(code) { #(int_to_char(code), code) })
+  |> list.filter(fn(pair) { pair.0 != "" })
+  |> dict.from_list
+}
+
 fn char_to_base91_value(char: String) -> Result(Int, ParseError) {
-  // Simple ASCII-based conversion
-  // Base-91 uses ASCII 33-123 (excluding 96)
   case string.to_graphemes(char) {
     [c] -> {
-      // This is a simplification - in real APRS, we'd need proper UTF-8 handling
-      // For now, assume ASCII characters
-      let byte = case c {
-        "!" -> 33  " " -> 32  "\"" -> 34  "#" -> 35  "$" -> 36  "%" -> 37
-        "&" -> 38  "'" -> 39  "(" -> 40   ")" -> 41  "*" -> 42  "+" -> 43
-        "," -> 44  "-" -> 45  "." -> 46   "/" -> 47  "0" -> 48  "1" -> 49
-        "2" -> 50  "3" -> 51  "4" -> 52   "5" -> 53  "6" -> 54  "7" -> 55
-        "8" -> 56  "9" -> 57  ":" -> 58   ";" -> 59  "<" -> 60  "=" -> 61
-        ">" -> 62  "?" -> 63  "@" -> 64   "A" -> 65  "B" -> 66  "C" -> 67
-        "D" -> 68  "E" -> 69  "F" -> 70   "G" -> 71  "H" -> 72  "I" -> 73
-        "J" -> 74  "K" -> 75  "L" -> 76   "M" -> 77  "N" -> 78  "O" -> 79
-        "P" -> 80  "Q" -> 81  "R" -> 82   "S" -> 83  "T" -> 84  "U" -> 85
-        "V" -> 86  "W" -> 87  "X" -> 88   "Y" -> 89  "Z" -> 90  "[" -> 91
-        "\\" -> 92 "]" -> 93  "^" -> 94   "_" -> 95  "`" -> 96  "a" -> 97
-        "b" -> 98  "c" -> 99  "d" -> 100  "e" -> 101 "f" -> 102 "g" -> 103
-        "h" -> 104 "i" -> 105 "j" -> 106  "k" -> 107 "l" -> 108 "m" -> 109
-        "n" -> 110 "o" -> 111 "p" -> 112  "q" -> 113 "r" -> 114 "s" -> 115
-        "t" -> 116 "u" -> 117 "v" -> 118  "w" -> 119 "x" -> 120 "y" -> 121
-        "z" -> 122 "{" -> 123 "|" -> 124  "}" -> 125 "~" -> 126
-        _ -> -1
-      }
-      
-      case byte >= 33 && byte <= 126 && byte != 96 {
-        True -> Ok(byte - 33)
-        False -> Error(InvalidPosition)
+      case dict.get(get_base91_map(), c) {
+        Ok(byte) if byte >= 33 && byte <= 126 && byte != 96 -> 
+          Ok(byte - 33)
+        _ -> 
+          Error(InvalidPosition)
       }
     }
     _ -> Error(InvalidPosition)
@@ -383,9 +406,9 @@ pub fn parse_position_extensions(
 fn parse_extensions_internal(
   data: String,
 ) -> Result(PositionExtensions, ParseError) {
-  let mut_data = data
+  let position_data = data
 
-  let #(course, speed, remaining1) = parse_course_speed(mut_data)
+  let #(course, speed, remaining1) = parse_course_speed(position_data)
   let #(phg, remaining2) = parse_phg_data(remaining1)
   let #(rng, remaining3) = parse_rng_data(remaining2)
   let #(altitude, remaining4) = parse_altitude_data(remaining3)
@@ -491,8 +514,10 @@ fn parse_phg_digits(
 
 fn parse_phg_value(char: String) -> Result(PhgValue, ParseError) {
   case int.parse(char) {
-    Ok(n) if n >= 0 && n <= 9 ->
-      make_phg_value(n) |> result.map_error(fn(_) { InvalidPosition })
+    Ok(n) if n >= 0 && n <= 9 -> {
+      let assert Ok(phg) = make_phg_value(n)
+      Ok(phg)
+    }
     _ -> Error(InvalidPosition)
   }
 }
