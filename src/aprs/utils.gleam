@@ -49,3 +49,25 @@ pub fn try_parse_slice(
   |> parser
   |> result_to_option
 }
+
+/// Parses an optional string value through a parser, transformer, and constructor
+pub fn parse_with_transformation(
+  opt opt: Option(String),
+  parser parser: fn(String) -> Result(a, e),
+  transformer transformer: fn(a) -> b,
+  constructor constructor: fn(b) -> Result(c, e),
+) -> Option(c) {
+  opt
+  |> option_then(fn(s) { parser(s) |> result_to_option })
+  |> option.map(transformer)
+  |> option_then(fn(v) { constructor(v) |> result_to_option })
+}
+
+/// Simplified version for when no transformation is needed
+pub fn parse_and_construct(
+  opt opt: Option(String),
+  parser parser: fn(String) -> Result(a, e),
+  constructor constructor: fn(a) -> Result(b, e),
+) -> Option(b) {
+  parse_with_transformation(opt, parser, fn(x) { x }, constructor)
+}

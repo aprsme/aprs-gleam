@@ -3,55 +3,50 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/dict
 import aprs/types.{
   type MiceLatitude,
   MiceInformation, MiceLatitude,
 }
 
 // MIC-E destination field characters for latitude encoding
+fn get_mice_lat_digit_map() {
+  dict.from_list([
+    // South digits
+    #("0", #(0, False)), #("1", #(1, False)), #("2", #(2, False)),
+    #("3", #(3, False)), #("4", #(4, False)), #("5", #(5, False)),
+    #("6", #(6, False)), #("7", #(7, False)), #("8", #(8, False)),
+    #("9", #(9, False)), #("L", #(0, False)),  // Space becomes L
+    // North digits with message bit
+    #("P", #(0, True)), #("Q", #(1, True)), #("R", #(2, True)),
+    #("S", #(3, True)), #("T", #(4, True)), #("U", #(5, True)),
+    #("V", #(6, True)), #("W", #(7, True)), #("X", #(8, True)),
+    #("Y", #(9, True)), #("Z", #(0, True)),   // Space becomes Z
+  ])
+}
+
+// Characters that indicate longitude offset 0 and west direction
+const mice_special_chars = "PQRSTUVWXYZ"
 
 // Decode MIC-E latitude digit
 fn decode_mice_lat_digit(c: String) -> Result(#(Int, Bool), String) {
-  case c {
-    "0" -> Ok(#(0, False))  // South
-    "1" -> Ok(#(1, False))
-    "2" -> Ok(#(2, False))
-    "3" -> Ok(#(3, False))
-    "4" -> Ok(#(4, False))
-    "5" -> Ok(#(5, False))
-    "6" -> Ok(#(6, False))
-    "7" -> Ok(#(7, False))
-    "8" -> Ok(#(8, False))
-    "9" -> Ok(#(9, False))
-    "L" -> Ok(#(0, False))  // Space becomes L
-    "P" -> Ok(#(0, True))   // North, Message Bit
-    "Q" -> Ok(#(1, True))
-    "R" -> Ok(#(2, True))
-    "S" -> Ok(#(3, True))
-    "T" -> Ok(#(4, True))
-    "U" -> Ok(#(5, True))
-    "V" -> Ok(#(6, True))
-    "W" -> Ok(#(7, True))
-    "X" -> Ok(#(8, True))
-    "Y" -> Ok(#(9, True))
-    "Z" -> Ok(#(0, True))   // Space becomes Z
-    _ -> Error("Invalid MIC-E latitude character")
-  }
+  dict.get(get_mice_lat_digit_map(), c)
+  |> result.replace_error("Invalid MIC-E latitude character")
 }
 
 // Decode MIC-E longitude offset
 fn decode_mice_lon_offset(c: String) -> Int {
-  case c {
-    "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" -> 0
-    _ -> 100
+  case string.contains(mice_special_chars, c) {
+    True -> 0
+    False -> 100
   }
 }
 
 // Decode MIC-E longitude direction
 fn decode_mice_lon_dir(c: String) -> String {
-  case c {
-    "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" -> "W"
-    _ -> "E"
+  case string.contains(mice_special_chars, c) {
+    True -> "W"
+    False -> "E"
   }
 }
 

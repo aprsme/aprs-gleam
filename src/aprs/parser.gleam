@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/dict
 import aprs/constants
 import aprs/utils
 import aprs/position
@@ -231,20 +232,27 @@ fn get_simple_parser(
   fn(body, _source, _destination) { parser(body) }
 }
 
+fn get_parser_map() {
+  dict.from_list([
+    #("!", get_simple_parser(parse_position_packet)),
+    #("=", get_simple_parser(parse_position_packet)),
+    #("@", get_simple_parser(parse_timestamp_position_packet)),
+    #("/", get_simple_parser(parse_timestamp_position_packet)),
+    #("'", parse_mice_packet_with_context),
+    #("`", parse_mice_packet_with_context),
+    #(";", get_simple_parser(parse_object_packet)),
+    #(")", get_simple_parser(parse_item_packet)),
+    #(":", get_simple_parser(parse_message_packet)),
+    #("T", get_simple_parser(parse_telemetry_packet)),
+    #("_", get_simple_parser(parse_weather_packet)),
+    #("$", get_simple_parser(parse_nmea_packet)),
+    #(">", get_simple_parser(parse_status_packet)),
+  ])
+}
+
 fn get_parser_for_prefix(prefix: String) -> Option(PacketParser) {
-  case prefix {
-    "!" | "=" -> Some(get_simple_parser(parse_position_packet))
-    "@" | "/" -> Some(get_simple_parser(parse_timestamp_position_packet))
-    "'" | "`" -> Some(parse_mice_packet_with_context)
-    ";" -> Some(get_simple_parser(parse_object_packet))
-    ")" -> Some(get_simple_parser(parse_item_packet))
-    ":" -> Some(get_simple_parser(parse_message_packet))
-    "T" -> Some(get_simple_parser(parse_telemetry_packet))
-    "_" -> Some(get_simple_parser(parse_weather_packet))
-    "$" -> Some(get_simple_parser(parse_nmea_packet))
-    ">" -> Some(get_simple_parser(parse_status_packet))
-    _ -> None
-  }
+  dict.get(get_parser_map(), prefix)
+  |> utils.result_to_option
 }
 
 fn parse_unknown_or_dx(
@@ -376,9 +384,9 @@ fn parse_timestamp(time_str: String, _tz: String) -> Result(Timestamp, ParseErro
 }
 
 fn apply_hemisphere_sign(value value: Float, direction direction: String, positive positive: String) -> Float {
-  case direction {
-    d if d == positive -> value
-    _ -> 0.0 -. value
+  case direction == positive {
+    True -> value
+    False -> 0.0 -. value
   }
 }
 

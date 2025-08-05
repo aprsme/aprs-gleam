@@ -2,6 +2,7 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleam/list
+import aprs/utils
 import aprs/types.{
   type Humidity, type Pressure, type RainAmount, type StrictWeatherData,
   type Temperature, type WindDirection, type WindSpeed,
@@ -86,89 +87,53 @@ pub fn parse_weather_elements(data: String) -> StrictWeatherData {
 }
 
 fn parse_wind_direction(dir_opt: Option(String)) -> Option(WindDirection) {
-  case dir_opt {
-    None -> None
-    Some(d) -> case int.parse(d) {
-      Ok(dir) if dir >= 0 && dir <= 360 -> 
-        case make_wind_direction(dir) {
-          Ok(wd) -> Some(wd)
-          Error(_) -> None
-        }
+  dir_opt
+  |> utils.option_then(fn(s) {
+    case int.parse(s) {
+      Ok(dir) if dir >= 0 && dir <= 360 -> Some(dir)
       _ -> None
     }
-  }
+  })
+  |> utils.option_try_map(make_wind_direction)
 }
 
 fn parse_wind_speed(speed_opt: Option(String)) -> Option(WindSpeed) {
-  case speed_opt {
-    None -> None
-    Some(s) -> case int.parse(s) {
-      Ok(speed) -> 
-        case make_wind_speed(int.to_float(speed) *. 1.60934) {
-          Ok(ws) -> Some(ws)
-          Error(_) -> None
-        }
-      _ -> None
-    }
-  }
+  speed_opt
+  |> utils.option_then(fn(s) { int.parse(s) |> utils.result_to_option })
+  |> option.map(fn(speed) { int.to_float(speed) *. 1.60934 })
+  |> utils.option_try_map(make_wind_speed)
 }
 
 fn parse_temperature(temp_opt: Option(String)) -> Option(Temperature) {
-  case temp_opt {
-    None -> None
-    Some(t) -> case int.parse(t) {
-      Ok(temp_f) -> {
-        let temp_c = { int.to_float(temp_f) -. 32.0 } *. 5.0 /. 9.0
-        case make_temperature(temp_c) {
-          Ok(temp_val) -> Some(temp_val)
-          Error(_) -> None
-        }
-      }
-      _ -> None
-    }
-  }
+  temp_opt
+  |> utils.option_then(fn(s) { int.parse(s) |> utils.result_to_option })
+  |> option.map(fn(temp_f) { { int.to_float(temp_f) -. 32.0 } *. 5.0 /. 9.0 })
+  |> utils.option_try_map(make_temperature)
 }
 
 fn parse_rain(rain_opt: Option(String)) -> Option(RainAmount) {
-  case rain_opt {
-    None -> None
-    Some(r) -> case int.parse(r) {
-      Ok(rain) -> 
-        case make_rain_amount(int.to_float(rain) *. 0.254) {
-          Ok(r_val) -> Some(r_val)
-          Error(_) -> None
-        }
-      _ -> None
-    }
-  }
+  rain_opt
+  |> utils.option_then(fn(s) { int.parse(s) |> utils.result_to_option })
+  |> option.map(fn(rain) { int.to_float(rain) *. 0.254 })
+  |> utils.option_try_map(make_rain_amount)
 }
 
 fn parse_humidity(hum_opt: Option(String)) -> Option(Humidity) {
-  case hum_opt {
-    None -> None
-    Some(h) -> case int.parse(h) {
-      Ok(hum) if hum >= 0 && hum <= 100 -> 
-        case make_humidity(hum) {
-          Ok(hum_val) -> Some(hum_val)
-          Error(_) -> None
-        }
+  hum_opt
+  |> utils.option_then(fn(s) {
+    case int.parse(s) {
+      Ok(hum) if hum >= 0 && hum <= 100 -> Some(hum)
       _ -> None
     }
-  }
+  })
+  |> utils.option_try_map(make_humidity)
 }
 
 fn parse_pressure(pres_opt: Option(String)) -> Option(Pressure) {
-  case pres_opt {
-    None -> None
-    Some(p) -> case int.parse(p) {
-      Ok(pres) -> 
-        case make_pressure(int.to_float(pres) /. 10.0) {
-          Ok(pres_val) -> Some(pres_val)
-          Error(_) -> None
-        }
-      _ -> None
-    }
-  }
+  pres_opt
+  |> utils.option_then(fn(s) { int.parse(s) |> utils.result_to_option })
+  |> option.map(fn(pres) { int.to_float(pres) /. 10.0 })
+  |> utils.option_try_map(make_pressure)
 }
 
 pub fn parse_weather_field(data data: String, prefix prefix: String, length length: Int) -> #(Option(String), String) {
