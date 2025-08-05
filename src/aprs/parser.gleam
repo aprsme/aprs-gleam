@@ -137,7 +137,7 @@ fn validate_ax25_call(call: String) -> Result(String, ParseError) {
   let clean_call = string.replace(call, "*", "")
 
   case string.length(clean_call) {
-    len if len < 1 || len > 9 -> Error(InvalidSourceCall)
+    len if len < 1 -> Error(InvalidSourceCall)
     _ -> {
       case string.split_once(clean_call, "-") {
         Ok(#(base_call, ssid)) -> {
@@ -161,16 +161,10 @@ fn validate_base_call(call: String) -> Result(String, ParseError) {
 }
 
 fn validate_ssid(ssid: String) -> Result(String, ParseError) {
-  // Check for numeric SSID (0-15)
-  case int.parse(ssid) {
-    Ok(n) if n >= 0 && n <= 15 -> Ok(ssid)
-    _ -> {
-      // Allow letter SSIDs for D-Star stations (e.g., -B, -BS, -RP)
-      case string.length(ssid) <= 3 && string_utils.is_alphanumeric(ssid) {
-        True -> Ok(ssid)
-        False -> Error(InvalidSourceCall)
-      }
-    }
+  // Allow any non-empty SSID after the dash
+  case string.is_empty(ssid) {
+    True -> Error(InvalidSourceCall)
+    False -> Ok(ssid)
   }
 }
 
@@ -203,12 +197,8 @@ pub fn parse_station_id(callsign_str: String) -> Result(StationId, ParseError) {
         make_callsign(base_call)
         |> result.map_error(fn(_) { InvalidSourceCall }),
       )
-      use ssid_int <- result.try(
-        int.parse(ssid_str)
-        |> result.map_error(fn(_) { InvalidSourceCall }),
-      )
       use ssid <- result.try(
-        make_ssid(ssid_int)
+        make_ssid(ssid_str)
         |> result.map_error(fn(_) { InvalidSourceCall }),
       )
       Ok(StationId(callsign: callsign, ssid: Some(ssid)))

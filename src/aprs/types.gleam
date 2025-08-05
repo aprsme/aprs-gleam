@@ -7,7 +7,7 @@ pub opaque type Callsign {
 }
 
 pub opaque type Ssid {
-  Ssid(Int)
+  Ssid(String)
 }
 
 pub type StationId {
@@ -103,10 +103,11 @@ pub fn make_callsign(s: String) -> Result(Callsign, String) {
   }
 }
 
-pub fn make_ssid(n: Int) -> Result(Ssid, String) {
-  case n >= 0 && n <= 15 {
-    True -> Ok(Ssid(n))
-    False -> Error("Invalid SSID: must be 0-15")
+pub fn make_ssid(s: String) -> Result(Ssid, String) {
+  // Allow any non-empty SSID string
+  case string.is_empty(s) {
+    True -> Error("Invalid SSID: cannot be empty")
+    False -> Ok(Ssid(s))
   }
 }
 
@@ -251,9 +252,9 @@ pub fn callsign_value(c: Callsign) -> String {
   s
 }
 
-pub fn ssid_value(s: Ssid) -> Int {
-  let Ssid(n) = s
-  n
+pub fn ssid_value(s: Ssid) -> String {
+  let Ssid(str) = s
+  str
 }
 
 pub fn latitude_value(l: Latitude) -> Float {

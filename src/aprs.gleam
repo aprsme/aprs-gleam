@@ -13,8 +13,8 @@ pub fn make_callsign(s: String) {
   types.make_callsign(s)
 }
 
-pub fn make_ssid(n: Int) {
-  types.make_ssid(n)
+pub fn make_ssid(s: String) {
+  types.make_ssid(s)
 }
 
 pub fn make_latitude(f: Float) {
